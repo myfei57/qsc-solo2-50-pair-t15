@@ -53,3 +53,38 @@ class MoldError(RubberCureError):
 
 class CureError(RubberCureError):
     """硫化计时状态非法。"""
+
+
+class CapacityError(RubberCureError):
+    """在制配额或机位容量不足，动作被拒绝。"""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        component: str = "batch",
+        reason: str,
+        used: int,
+        limit: int,
+        available: int = 0,
+        **details: object,
+    ) -> None:
+        super().__init__(message, component=component)
+        self.reason = reason
+        self.used = int(used)
+        self.limit = int(limit)
+        self.available = int(available)
+        self.details = dict(details)
+
+    def as_record(self) -> dict:
+        record = super().as_record()
+        record.update(
+            {
+                "reason": self.reason,
+                "used": self.used,
+                "limit": self.limit,
+                "available": self.available,
+            }
+        )
+        record.update(self.details)
+        return record

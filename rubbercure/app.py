@@ -18,7 +18,7 @@ from .batch.batch import BatchScheduler
 from .batch.profile import BatchProfile
 from .clock import Clock, SystemClock
 from .config import PlatformConfig, default_config
-from .errors import RubberCureError
+from .errors import CapacityError, RubberCureError
 from .eventbus import Event, EventBus
 from .mold.mapping import SensorMapBook
 from .mold.registry import MoldRegistry
@@ -88,7 +88,7 @@ class Platform:
         self.fleet = PressFleet.from_config(
             self.clock, self.bus, self.store.root, self.config
         )
-        self.scheduler = BatchScheduler(self.bus, self.config.batch, self.curves)
+        self.scheduler = BatchScheduler(self.bus, self.config.batch, self.curves, self.fleet)
         self._seed_reference_curve()
 
         self._cycles = 0
@@ -430,7 +430,13 @@ class Platform:
                 message=payload["message"],
             )
         )
-        return record.as_dict()
+        result = record.as_dict()
+        if isinstance(error, CapacityError):
+            result["reason"] = error.reason
+            result["used"] = error.used
+            result["limit"] = error.limit
+            result["available"] = error.available
+        return result
 
     def reset_state(self) -> dict:
         """清掉所有硫化机的落盘状态（检修后重新标定用）。"""

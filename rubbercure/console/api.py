@@ -80,6 +80,7 @@ class ConsoleAPI:
             "molds": summarize_count(platform),
             "latched": platform.latch.set_molds(),
             "queued": platform.scheduler.queue.entries(),
+            "capacity": platform.scheduler.capacity_snapshot(),
             "curves": sorted(platform.curves.snapshot()),
             "steam_target_kpa": platform.config.steam.target_pressure_kpa,
             "temp_setpoint_c": platform.config.temp.setpoint_c,

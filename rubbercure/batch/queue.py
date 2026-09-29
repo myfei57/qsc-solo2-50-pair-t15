@@ -1,8 +1,8 @@
 """待硫化任务队列。
 
 模具登记之后进入调度队列，等空闲机位。队列按优先级排序、同优先级按入队
-先后（FIFO），保证同一批制品按登记顺序投产。队列有容量上限，超出直接
-拒绝入队，避免无界积压。
+先后（FIFO），保证同一批制品按登记顺序投产。队列有容量上限，防止待办
+无限积压；是否允许新增在制则由容量模块结合在机模具统一判定。
 """
 
 from __future__ import annotations
@@ -49,6 +49,10 @@ class DispatchQueue:
     def __len__(self) -> int:
         with self._lock:
             return len(self._entries)
+
+    @property
+    def capacity(self) -> int:
+        return self._max
 
     def push(
         self,

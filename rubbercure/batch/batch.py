@@ -1,22 +1,28 @@
 """机群调度器。
 
 保存待投产队列与最近若干条完成上报，提供入队、排产、完成上报与有序回放
-四件事。上报序号在调度器内统一分配，排序始终走可复现的键；控制台与顺序
-自查都从这里取数。
+四件事。入队前统一计算"队列 + 在机模具"的在制数量，超上限直接拒绝；
+上报序号在调度器内统一分配，排序始终走可复现的键；控制台与顺序自查都从
+这里取数。
 """
 
 from __future__ import annotations
 
 import threading
+from typing import TYPE_CHECKING
 
 from ..config import BatchLimits
 from ..eventbus import Event, EventBus
 from ..timer.curve import CurveBook
+from .capacity import CapacitySnapshot, capacity_snapshot, require_wip_capacity
 from .ordering import order_completions
 from .profile import BatchProfile
 from .queue import DispatchQueue, QueueEntry
 from .report import CompletionReport, report_completion
 from .state import SchedulerPhase, SchedulerStateMachine
+
+if TYPE_CHECKING:  # pragma: no cover - 仅用于类型标注
+    from ..press.fleet import PressFleet
 
 _REPORT_MEMORY = 512
 
@@ -24,10 +30,17 @@ _REPORT_MEMORY = 512
 class BatchScheduler:
     """机群调度器。"""
 
-    def __init__(self, bus: EventBus, limits: BatchLimits, curves: CurveBook) -> None:
+    def __init__(
+        self,
+        bus: EventBus,
+        limits: BatchLimits,
+        curves: CurveBook,
+        fleet: "PressFleet",
+    ) -> None:
         self.limits = limits
         self.bus = bus
         self.curves = curves
+        self.fleet = fleet
         self.queue = DispatchQueue(limits.max_queue)
         self.lock = threading.RLock()
         self._state = SchedulerStateMachine()
@@ -42,15 +55,28 @@ class BatchScheduler:
         return self._state.transition(target)
 
     def enqueue(self, profile: BatchProfile, enqueued_at: float, priority: int = 50) -> QueueEntry:
-        """把一份配方入队。"""
+        """把一份配方入队；在制配额满时直接拒绝。"""
 
-        return self.queue.push(
-            profile.mold_id,
-            profile.product_code,
-            profile.thickness_mm,
-            enqueued_at,
-            priority=priority,
-        )
+        with self.lock:
+            require_wip_capacity(self.capacity(), profile.mold_id)
+            return self.queue.push(
+                profile.mold_id,
+                profile.product_code,
+                profile.thickness_mm,
+                enqueued_at,
+                priority=priority,
+            )
+
+    def capacity(self) -> CapacitySnapshot:
+        """返回当前在制配额与机位余量。"""
+
+        with self.lock:
+            return capacity_snapshot(self.fleet, self.queue, self.limits.max_wip)
+
+    def capacity_snapshot(self) -> dict:
+        """返回可序列化的容量快照。"""
+
+        return self.capacity().as_dict()
 
     def record_report(
         self,
@@ -111,6 +137,7 @@ class BatchScheduler:
             return {
                 "phase": self._state.phase.value,
                 "history": self._state.history(),
+                "capacity": self.capacity().as_dict(),
                 "queue": self.queue.snapshot(),
                 "report_sequence": self._report_sequence,
                 "recent_reports": [report.as_dict() for report in self._reports[-10:]],
