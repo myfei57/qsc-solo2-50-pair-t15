@@ -1,6 +1,6 @@
 """机群调度与完成上报。"""
 
-from .assign import assign_next
+from .assign import DispatchResult, assign_next
 from .batch import BatchScheduler
 from .ordering import order_completions
 from .profile import BatchProfile
@@ -11,6 +11,7 @@ from .state import SchedulerPhase, SchedulerStateMachine
 
 __all__ = [
     "assign_next",
+    "DispatchResult",
     "BatchScheduler",
     "order_completions",
     "BatchProfile",

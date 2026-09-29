@@ -80,9 +80,19 @@ class ConsoleAPI:
             "molds": summarize_count(platform),
             "latched": platform.latch.set_molds(),
             "queued": platform.scheduler.queue.entries(),
+            "capacity": platform.scheduler.capacity_snapshot(),
             "curves": sorted(platform.curves.snapshot()),
             "steam_target_kpa": platform.config.steam.target_pressure_kpa,
             "temp_setpoint_c": platform.config.temp.setpoint_c,
+        }
+
+    def _failure(self, error: RubberCureError) -> dict:
+        record = self.platform.note_error(error)
+        return {
+            "ok": False,
+            "error": record,
+            "error_type": type(error).__name__,
+            "message": error.message,
         }
 
     def cure(self, payload: dict) -> dict:
@@ -101,7 +111,7 @@ class ConsoleAPI:
                 ),
             }
         except RubberCureError as error:
-            return {"ok": False, "error": self.platform.note_error(error)}
+            return self._failure(error)
 
     def open_mold(self, payload: dict) -> dict:
         try:
@@ -110,7 +120,7 @@ class ConsoleAPI:
                 "report": self.platform.run_open(str(payload.get("press_id", "press-01"))),
             }
         except RubberCureError as error:
-            return {"ok": False, "error": self.platform.note_error(error)}
+            return self._failure(error)
 
     def dispatch(self, payload: dict) -> dict:
         try:
@@ -119,7 +129,7 @@ class ConsoleAPI:
                 "report": self.platform.run_dispatch(str(payload.get("press_id", "press-01"))),
             }
         except RubberCureError as error:
-            return {"ok": False, "error": self.platform.note_error(error)}
+            return self._failure(error)
 
     def stop(self, payload: dict) -> dict:
         try:
@@ -128,7 +138,7 @@ class ConsoleAPI:
                 "report": self.platform.run_stop(str(payload.get("press_id", "press-01"))),
             }
         except RubberCureError as error:
-            return {"ok": False, "error": self.platform.note_error(error)}
+            return self._failure(error)
 
     def step(self, payload: dict) -> dict:
         """推进一个机群控制周期。"""
@@ -143,7 +153,7 @@ class ConsoleAPI:
         try:
             return {"ok": True, "cycle": self.platform.cycle(inputs)}
         except RubberCureError as error:
-            return {"ok": False, "error": self.platform.note_error(error)}
+            return self._failure(error)
 
     def enqueue(self, payload: dict) -> dict:
         mold_id = str(payload.get("mold_id", "mold-01"))
@@ -157,7 +167,7 @@ class ConsoleAPI:
                 ),
             }
         except RubberCureError as error:
-            return {"ok": False, "error": self.platform.note_error(error)}
+            return self._failure(error)
 
     def remap(self, payload: dict) -> dict:
         """重新登记传感器映射。"""
@@ -169,7 +179,7 @@ class ConsoleAPI:
             return {"ok": True, "mapping": self.platform.remap_sensor(mold_id, sensors)}
         except (RubberCureError, ValueError) as error:
             if isinstance(error, RubberCureError):
-                return {"ok": False, "error": self.platform.note_error(error)}
+                return self._failure(error)
             return {"ok": False, "error": {"type": "ValueError", "message": str(error)}}
 
     def retire(self, payload: dict) -> dict:
@@ -180,7 +190,7 @@ class ConsoleAPI:
         try:
             return {"ok": True, "mold": self.platform.retire_mold(mold_id, reason)}
         except RubberCureError as error:
-            return {"ok": False, "error": self.platform.note_error(error)}
+            return self._failure(error)
 
 
 def summarize_count(platform: Platform) -> dict:

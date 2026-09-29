@@ -8,8 +8,10 @@
 from __future__ import annotations
 
 import threading
+from typing import TYPE_CHECKING
 
 from ..config import BatchLimits
+from ..errors import WipLimitError
 from ..eventbus import Event, EventBus
 from ..timer.curve import CurveBook
 from .ordering import order_completions
@@ -18,16 +20,26 @@ from .queue import DispatchQueue, QueueEntry
 from .report import CompletionReport, report_completion
 from .state import SchedulerPhase, SchedulerStateMachine
 
+if TYPE_CHECKING:  # pragma: no cover - 仅用于类型标注
+    from ..press.fleet import PressFleet
+
 _REPORT_MEMORY = 512
 
 
 class BatchScheduler:
     """机群调度器。"""
 
-    def __init__(self, bus: EventBus, limits: BatchLimits, curves: CurveBook) -> None:
+    def __init__(
+        self,
+        bus: EventBus,
+        limits: BatchLimits,
+        curves: CurveBook,
+        fleet: "PressFleet",
+    ) -> None:
         self.limits = limits
         self.bus = bus
         self.curves = curves
+        self.fleet = fleet
         self.queue = DispatchQueue(limits.max_queue)
         self.lock = threading.RLock()
         self._state = SchedulerStateMachine()
@@ -41,16 +53,47 @@ class BatchScheduler:
     def transition(self, target: SchedulerPhase) -> SchedulerPhase:
         return self._state.transition(target)
 
-    def enqueue(self, profile: BatchProfile, enqueued_at: float, priority: int = 50) -> QueueEntry:
-        """把一份配方入队。"""
+    def _loaded_count(self) -> int:
+        """统计当前已挂在机位上的模具。"""
 
-        return self.queue.push(
-            profile.mold_id,
-            profile.product_code,
-            profile.thickness_mm,
-            enqueued_at,
-            priority=priority,
-        )
+        return sum(1 for unit in self.fleet.all() if unit.mold_id is not None)
+
+    def capacity_snapshot(self) -> dict:
+        """汇总在制配额与机位占用，供入队判断和控制台展示。"""
+
+        with self.lock, self.fleet.lock:
+            loaded = self._loaded_count()
+            queued = len(self.queue)
+            idle_presses = [unit.press_id for unit in self.fleet.available_presses()]
+        return {
+            "fleet_size": self.fleet.size,
+            "loaded": loaded,
+            "queued": queued,
+            "wip": loaded + queued,
+            "max_wip": self.limits.max_wip,
+            "idle_presses": idle_presses,
+            "available_presses": len(idle_presses),
+            "available_wip_slots": max(0, self.limits.max_wip - loaded - queued),
+        }
+
+    def enqueue(self, profile: BatchProfile, enqueued_at: float, priority: int = 50) -> QueueEntry:
+        """把一份配方入队；超过在制配额时直接拒绝。"""
+
+        with self.lock:
+            capacity = self.capacity_snapshot()
+            if capacity["wip"] >= self.limits.max_wip:
+                raise WipLimitError(
+                    f"在制模具已达上限（{capacity['wip']}/{self.limits.max_wip}），"
+                    f"已上机 {capacity['loaded']}，排队 {capacity['queued']}",
+                    component="batch",
+                )
+            return self.queue.push(
+                profile.mold_id,
+                profile.product_code,
+                profile.thickness_mm,
+                enqueued_at,
+                priority=priority,
+            )
 
     def record_report(
         self,
@@ -111,6 +154,7 @@ class BatchScheduler:
             return {
                 "phase": self._state.phase.value,
                 "history": self._state.history(),
+                "capacity": self.capacity_snapshot(),
                 "queue": self.queue.snapshot(),
                 "report_sequence": self._report_sequence,
                 "recent_reports": [report.as_dict() for report in self._reports[-10:]],

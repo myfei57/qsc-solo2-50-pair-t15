@@ -10,7 +10,7 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass
 
-from ..errors import RubberCureError
+from ..errors import QueueCapacityError
 
 
 @dataclass(frozen=True)
@@ -40,7 +40,7 @@ class DispatchQueue:
 
     def __init__(self, max_queue: int) -> None:
         if max_queue < 1:
-            raise RubberCureError("队列容量必须为正", component="batch")
+            raise QueueCapacityError("队列容量必须为正", component="batch")
         self._max = int(max_queue)
         self._entries: list[QueueEntry] = []
         self._sequence = 0
@@ -62,7 +62,10 @@ class DispatchQueue:
 
         with self._lock:
             if len(self._entries) >= self._max:
-                raise RubberCureError(f"调度队列已满（{self._max}）", component="batch")
+                raise QueueCapacityError(
+                    f"调度队列已满（{self._max}）",
+                    component="batch",
+                )
             self._sequence += 1
             entry = QueueEntry(
                 mold_id=mold_id,

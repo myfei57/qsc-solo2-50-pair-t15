@@ -75,7 +75,7 @@ class DispatchSequence:
             "order_confirm", "batch", confirmed=len(ordered), window_s=self.scheduler.limits.dispatch_window_s
         )
 
-        assignment = schedule_next(
+        result = schedule_next(
             self.scheduler,
             self.fleet,
             self.scheduler.queue,
@@ -83,11 +83,13 @@ class DispatchSequence:
             self.bus,
             self.clock.now(),
         )
+        assignment = result.assignment
         self.recorder.note(
             "mold_assigned",
             "batch",
             press_id=assignment.press_id if assignment else "",
             mold_id=assignment.mold_id if assignment else "",
+            reason=result.reason or "",
         )
 
         self.bus.publish(
@@ -99,18 +101,21 @@ class DispatchSequence:
                 severity="info",
                 ordered=[item.mold_id for item in ordered],
                 ordering=ordering_keys(ordered),
-                assigned=(assignment.as_dict() if assignment else None),
+                assigned=result.as_dict(),
             )
         )
         self.recorder.note("audit_note", "audit", mold_id=mold_id)
-        return self.report(mold_id, assignment)
+        return self.report(mold_id, result)
 
-    def report(self, mold_id: str, assignment) -> dict:
+    def report(self, mold_id: str, result) -> dict:
+        assignment = result.assignment
         return {
             "mold_id": mold_id,
             "steps": self.recorder.names(),
             "violations": verify_order(self.recorder.names(), DISPATCH_ORDER),
             "queued": self.scheduler.queue.entries(),
             "assigned": assignment.as_dict() if assignment else None,
+            "reason": result.reason,
+            "capacity": self.scheduler.capacity_snapshot(),
             "scheduler_phase": self.scheduler.phase.value,
         }

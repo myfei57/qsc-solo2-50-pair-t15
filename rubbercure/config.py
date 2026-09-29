@@ -265,16 +265,22 @@ class BatchLimits:
 
     dispatch_window_s: float
     max_queue: int
+    max_wip: int
 
     @classmethod
     def from_mapping(cls, section: Mapping[str, Any]) -> "BatchLimits":
         return cls(
             dispatch_window_s=_number(section, "dispatch_window_s", minimum=1.0),
             max_queue=_integer(section, "max_queue", minimum=1),
+            max_wip=_integer(section, "max_wip", minimum=1),
         )
 
     def as_dict(self) -> dict:
-        return {"dispatch_window_s": self.dispatch_window_s, "max_queue": self.max_queue}
+        return {
+            "dispatch_window_s": self.dispatch_window_s,
+            "max_queue": self.max_queue,
+            "max_wip": self.max_wip,
+        }
 
 
 @dataclass(frozen=True)
@@ -378,7 +384,7 @@ def default_config() -> PlatformConfig:
             alarm_outlet_c=48.0,
             drain_hold_s=30.0,
         ),
-        batch=BatchLimits(dispatch_window_s=180.0, max_queue=12),
+        batch=BatchLimits(dispatch_window_s=180.0, max_queue=12, max_wip=6),
         pages=("press", "steam", "timer", "alarms"),
     )
 

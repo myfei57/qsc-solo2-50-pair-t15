@@ -88,7 +88,9 @@ class Platform:
         self.fleet = PressFleet.from_config(
             self.clock, self.bus, self.store.root, self.config
         )
-        self.scheduler = BatchScheduler(self.bus, self.config.batch, self.curves)
+        self.scheduler = BatchScheduler(
+            self.bus, self.config.batch, self.curves, self.fleet
+        )
         self._seed_reference_curve()
 
         self._cycles = 0
@@ -196,7 +198,8 @@ class Platform:
             self.config.press.default_thickness_mm if thickness_mm is None else float(thickness_mm)
         )
         profile = BatchProfile.resolve(mold_id, thickness, self.registry, self.curves)
-        entry = self.scheduler.enqueue(profile, self.clock.now(), priority=priority)
+        with self._lock:
+            entry = self.scheduler.enqueue(profile, self.clock.now(), priority=priority)
         return {"profile": profile.as_dict(), "entry": entry.as_dict()}
 
     def run_cure(

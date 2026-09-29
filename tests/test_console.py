@@ -102,6 +102,20 @@ def test_console_api_actions_cover_maintenance(platform):
     assert platform.scheduler.queue.entries() == []
 
 
+def test_console_reports_distinct_wip_failure(platform):
+    api = ConsoleAPI(platform)
+    for index in range(platform.config.batch.max_wip + 1):
+        mold_id = f"api-wip-{index}"
+        platform.register_mold(mold_id, cavity_count=2)
+        result = api.enqueue({"mold_id": mold_id})
+        if index < platform.config.batch.max_wip:
+            assert result["ok"] is True
+        else:
+            assert result["ok"] is False
+            assert result["error_type"] == "WipLimitError"
+            assert "在制模具已达上限" in result["message"]
+
+
 def test_render_page_rejects_unknown_page(platform):
     try:
         render_page("nope", platform)

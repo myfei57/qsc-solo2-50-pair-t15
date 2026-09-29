@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import os
+import threading
 
 from ..clock import Clock
 from ..config import PlatformConfig
@@ -27,6 +28,7 @@ class PressFleet:
         self._presses = {press.press_id: press for press in presses}
         if len(self._presses) != len(presses):
             raise RubberCureError("机群中存在重复的硫化机编号", component="press")
+        self.lock = threading.RLock()
 
     @classmethod
     def from_config(
@@ -71,6 +73,12 @@ class PressFleet:
             for unit in self.all()
             if unit.phase in (PressPhase.IDLE, PressPhase.DONE)
         ]
+
+    def available_presses(self) -> list[CuringPress]:
+        """返回当前可立即挂模的机位。"""
+
+        with self.lock:
+            return [unit for unit in self.idle_presses() if unit.mold_id is None]
 
     def snapshot(self) -> dict:
         return {unit.press_id: unit.snapshot() for unit in self.all()}

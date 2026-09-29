@@ -62,6 +62,7 @@ def test_load_config_from_repository_file():
     config = load_config(str(ROOT / "config" / "rubbercure.yaml"))
     assert config.name == "RubberCure"
     assert config.press.fleet_size == 3
+    assert config.batch.max_wip == 6
     assert config.steam.min_pressure_kpa < config.steam.target_pressure_kpa
     mapping = config_to_mapping(config)
     assert mapping["limits"]["steam"]["target_pressure_kpa"] == config.steam.target_pressure_kpa

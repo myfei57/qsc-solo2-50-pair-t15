@@ -1,14 +1,31 @@
-"""并发写入方：压力目标仲裁与完成上报排序都必须可复现。"""
+"""并发写入方与机群容量约束都必须可复现。"""
 
 from __future__ import annotations
 
 import threading
+from dataclasses import replace
 
 import pytest
 
+from rubbercure.app import build_platform
+from rubbercure.config import default_config
+from rubbercure.batch.assign import assign_next
 from rubbercure.batch.ordering import order_completions, ordering_keys
 from rubbercure.batch.report import CompletionReport
+from rubbercure.errors import (
+    NoIdlePressError,
+    QueueCapacityError,
+    WipLimitError,
+)
 from rubbercure.steam.setpoint import SetpointArbiter
+
+
+def _platform_with_wip(tmp_path, clock, *, max_wip: int, max_queue: int = 12):
+    config = replace(
+        default_config(),
+        batch=replace(default_config().batch, max_wip=max_wip, max_queue=max_queue),
+    )
+    return build_platform(config, clock=clock, storage_root=str(tmp_path / "state"))
 
 
 def test_setpoint_arbiter_commits_a_single_complete_request():
@@ -62,6 +79,110 @@ def test_order_completions_window_filters_stale_reports():
     ]
     windowed = order_completions(reports, window_s=5.0)
     assert [item.mold_id for item in windowed] == ["m2", "m3"]
+
+
+def test_wip_quota_counts_loaded_and_queued_molds(tmp_path, clock):
+    platform = _platform_with_wip(tmp_path, clock, max_wip=2)
+    for mold_id in ("wip-1", "wip-2", "wip-3"):
+        platform.register_mold(mold_id, cavity_count=2)
+
+    platform.enqueue_mold("wip-1")
+    platform.scheduler.queue.pop_next()
+    platform.press("press-01").load_mold("wip-1")
+    platform.enqueue_mold("wip-2")
+    capacity = platform.scheduler.capacity_snapshot()
+    assert capacity == {
+        "fleet_size": 3,
+        "loaded": 1,
+        "queued": 1,
+        "wip": 2,
+        "max_wip": 2,
+        "idle_presses": ["press-02", "press-03"],
+        "available_presses": 2,
+        "available_wip_slots": 0,
+    }
+
+    with pytest.raises(WipLimitError) as excinfo:
+        platform.enqueue_mold("wip-3")
+    assert "在制模具已达上限" in str(excinfo.value)
+    assert excinfo.value.component == "batch"
+
+
+def test_no_idle_press_is_distinct_from_wip_quota_full(tmp_path, clock):
+    platform = _platform_with_wip(tmp_path, clock, max_wip=4)
+    for index in range(1, 5):
+        mold_id = f"cap-{index}"
+        platform.register_mold(mold_id, cavity_count=2)
+        if index <= 3:
+            platform.press(f"press-{index:02d}").load_mold(mold_id)
+        platform.enqueue_mold(mold_id)
+
+    capacity = platform.scheduler.capacity_snapshot()
+    assert capacity["wip"] == 4
+    assert capacity["available_presses"] == 0
+    with pytest.raises(NoIdlePressError):
+        assign_next(
+            platform.fleet,
+            platform.scheduler.queue,
+            platform.registry,
+            platform.bus,
+            clock.now(),
+        )
+
+
+def test_empty_queue_and_full_presses_do_not_enter_drained_phase(tmp_path, clock):
+    platform = _platform_with_wip(tmp_path, clock, max_wip=3)
+    for index, unit in enumerate(platform.fleet.all(), start=1):
+        platform.register_mold(f"loaded-{index}", cavity_count=2)
+        unit.load_mold(f"loaded-{index}")
+
+    report = platform.run_dispatch("press-01")
+    assert report["assigned"] is None
+    assert report["reason"] == "no_idle_press"
+    assert report["capacity"]["available_presses"] == 0
+    assert report["scheduler_phase"] == "dispatching"
+
+
+def test_queue_capacity_error_remains_distinct_from_wip(tmp_path, clock):
+    platform = _platform_with_wip(tmp_path, clock, max_wip=10, max_queue=1)
+    for mold_id in ("q-1", "q-2"):
+        platform.register_mold(mold_id, cavity_count=2)
+
+    platform.enqueue_mold("q-1")
+    with pytest.raises(QueueCapacityError):
+        platform.enqueue_mold("q-2")
+
+
+def test_concurrent_enqueue_never_exceeds_wip_quota(platform):
+    for index in range(20):
+        platform.register_mold(f"race-wip-{index}", cavity_count=2)
+
+    accepted: list[str] = []
+    rejected: list[str] = []
+    start = threading.Barrier(20)
+
+    def enqueue(index: int) -> None:
+        mold_id = f"race-wip-{index}"
+        start.wait()
+        try:
+            platform.enqueue_mold(mold_id)
+        except WipLimitError:
+            rejected.append(mold_id)
+        else:
+            accepted.append(mold_id)
+
+    threads = [threading.Thread(target=enqueue, args=(index,)) for index in range(20)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    capacity = platform.scheduler.capacity_snapshot()
+    assert len(accepted) == platform.config.batch.max_wip
+    assert len(rejected) == 20 - platform.config.batch.max_wip
+    assert capacity["queued"] == platform.config.batch.max_wip
+    assert capacity["wip"] == platform.config.batch.max_wip
+    assert capacity["available_wip_slots"] == 0
 
 
 def test_platform_concurrency_probes_are_stable(platform):

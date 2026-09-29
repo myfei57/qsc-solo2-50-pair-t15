@@ -10,12 +10,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from ..errors import NoIdlePressError
 from ..eventbus import Event, EventBus
 from ..mold.registry import MoldRegistry
 from .queue import DispatchQueue
 
 if TYPE_CHECKING:  # pragma: no cover - 仅用于类型标注
     from ..press.fleet import PressFleet
+
+
+REASON_NO_TASK = "no_task"
+REASON_NO_IDLE_PRESS = "no_idle_press"
 
 
 @dataclass(frozen=True)
@@ -38,31 +43,52 @@ class Assignment:
         }
 
 
+@dataclass(frozen=True)
+class DispatchResult:
+    """一次派工尝试的结果，用原因区分队列空和机位满。"""
+
+    assignment: Assignment | None
+    reason: str | None
+
+    @property
+    def assigned(self) -> bool:
+        return self.assignment is not None
+
+    def as_dict(self) -> dict:
+        return {
+            "assigned": self.assignment.as_dict() if self.assignment else None,
+            "reason": self.reason,
+        }
+
+
 def assign_next(
     fleet: "PressFleet",
     queue: DispatchQueue,
     registry: MoldRegistry,
     bus: EventBus,
     assigned_at: float,
-) -> Assignment | None:
-    """把队首任务分配给一台空闲机位；无任务或无机位时返回 None。"""
+) -> DispatchResult:
+    """把队首任务分配给一台空闲机位。"""
 
-    idle = [unit for unit in fleet.idle_presses() if unit.mold_id is None]
-    if not idle:
-        return None
-    entry = queue.pop_next()
-    if entry is None:
-        return None
-    registry.require_active(entry.mold_id)
-    target = idle[0]
-    target.load_mold(entry.mold_id)
-    assignment = Assignment(
-        press_id=target.press_id,
-        mold_id=entry.mold_id,
-        product_code=entry.product_code,
-        thickness_mm=entry.thickness_mm,
-        assigned_at=assigned_at,
-    )
+    with fleet.lock:
+        idle = fleet.available_presses()
+        if not idle:
+            if len(queue) > 0:
+                raise NoIdlePressError(f"全部 {fleet.size} 个机位均被占用", component="batch")
+            return DispatchResult(None, REASON_NO_TASK)
+        entry = queue.pop_next()
+        if entry is None:
+            return DispatchResult(None, REASON_NO_TASK)
+        registry.require_active(entry.mold_id)
+        target = idle[0]
+        target.load_mold(entry.mold_id)
+        assignment = Assignment(
+            press_id=target.press_id,
+            mold_id=entry.mold_id,
+            product_code=entry.product_code,
+            thickness_mm=entry.thickness_mm,
+            assigned_at=assigned_at,
+        )
     bus.publish(
         Event.of(
             "batch",
@@ -73,4 +99,4 @@ def assign_next(
             **assignment.as_dict(),
         )
     )
-    return assignment
+    return DispatchResult(assignment, None)
